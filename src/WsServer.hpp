@@ -140,8 +140,14 @@ public:
             while (!m_message_resolver.empty()) {
                 auto res = m_message_resolver.response_next();
                 lock_guard<mutex> guard(m_connection_lock);
-                for (auto it = res.receivers.begin(); it != res.receivers.end(); ++it) 
-                    m_server.send(*it, res.msg, websocketpp::frame::opcode::TEXT);
+                for (auto it = res.receivers.begin(); it != res.receivers.end(); ++it) {
+                    try {
+                        m_server.send(*it, res.msg, websocketpp::frame::opcode::TEXT);
+                    }
+                    catch (const std::exception& e) {
+                        std::cout << e.what() << std::endl;
+                    }
+                }
                 //else
                   //  m_server.send(res.receiver, res.msg, websocketpp::frame::opcode::TEXT);
             }
