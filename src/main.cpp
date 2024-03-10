@@ -1,18 +1,22 @@
+#include <thread>
+
 #include "WsServer.hpp"
+#include "HttpServer.hpp"
 
 int main() {
     try {
-        WsServer server_instance;
+        WsServer ws_server;
+        HttpServer http_server;
 
-        // Start a thread to run the processing loop
-        thread t(bind(&WsServer::process_messages, &server_instance));
+        std::thread ws_process_th(std::bind(&WsServer::process_message, &ws_server));
+        std::thread http_th(std::bind(&HttpServer::run, &http_server, 1146));
 
-        // Run the asio loop with the main thread
-        server_instance.run(1145);
+        ws_server.run(1145);
 
-        t.join();
+        http_th.join();
+        ws_process_th.join();
     }
-    catch (websocketpp::exception const& e) {
+    catch (const std::exception& e) {
         std::cout << e.what() << std::endl;
     }
 }

@@ -38,8 +38,9 @@ public:
     };
 
     struct Player {
-        std::string name;
+        std::string user_name;
         std::vector<Card> cards_in_hand;
+        std::vector<Card> cards_when_wild_draw_4;
         bool drawn_one = false;
         Card last_drew;
         bool said_uno = false;
@@ -62,8 +63,8 @@ public:
 public:
     Uno(const std::vector<std::string> & players_) {
         this->players_.reserve(players_.size());
-        for (auto& name : players_)
-            this->players_.emplace_back(Player{ name,{} });
+        for (auto& user_name : players_)
+            this->players_.emplace_back(Player{ user_name,{} });
 
         srand(time(0));
 
@@ -141,7 +142,7 @@ public:
         return deck.back();
     }
     std::string get_next_player() {
-        return players_[next_player_idx].name;
+        return players_[next_player_idx].user_name;
     }
     CardColor get_specified_color(){
         return last_color;
@@ -151,7 +152,7 @@ public:
     }
     int get_player_card_count(const std::string& player_name) {
         for (auto& player : players_)
-            if (player.name == player_name) 
+            if (player.user_name == player_name) 
                 return player.cards_in_hand.size();
     }
 
@@ -180,12 +181,15 @@ public:
             return false;
 
         auto& player = players_[next_player_idx];
-        if (player_name != player.name)
+        if (player_name != player.user_name)
             return false;
 
         if (player.drawn_one && player.last_drew != card)
             return false;
         player.drawn_one = false;
+
+        if (card.content == WILD_DRAW_4) 
+            player.cards_when_wild_draw_4 = player.cards_in_hand;
 
         deck.push(card);
         for (auto it = player.cards_in_hand.begin();
@@ -208,7 +212,7 @@ public:
             reversed = !reversed;
 
         next();
-
+        
         if (card.content == DRAW_2) {
             give(players_[next_player_idx], 2);
             next();
@@ -238,7 +242,7 @@ public:
             return false;
         
         auto& player = players_[next_player_idx];
-        if (player_name != player.name)
+        if (player_name != player.user_name)
             return false;
         if (player.drawn_one)
             return false;
@@ -258,7 +262,7 @@ public:
             return false;
         
         auto& player = players_[next_player_idx];
-        if (player_name != player.name)
+        if (player_name != player.user_name)
             return false;
 
         if (!player.drawn_one)
@@ -271,9 +275,9 @@ public:
 
     bool say_uno(const std::string& player_name) {
         auto& player = players_[next_player_idx];
-        if (player_name != player.name) 
+        if (player_name != player.user_name) 
             for(auto& player: players_)
-                if (player.name == player_name) {
+                if (player.user_name == player_name) {
                     give(player, 2);
                     return false;
                 }
@@ -293,14 +297,17 @@ public:
         }
         auto& player = players_[next_player_idx];
         auto& sus = get_last_player_ref();
-        if (player_name != player.name) {
+        if (player_name != player.user_name) {
             valid = false;
             return {};
         }
         success = false;
-        for(auto& card: sus.cards_in_hand)
+        for (auto& card : sus.cards_when_wild_draw_4)
             if (card.color == card_b4_wild_draw_4.color ||
-                card.content == card_b4_wild_draw_4.content) {
+                (card_b4_wild_draw_4.content != WILD &&
+                    card_b4_wild_draw_4.content != WILD_DRAW_4 &&
+                    card.content == card_b4_wild_draw_4.content)
+                ) {
                 success = true; break;
             }
         if (success)
@@ -310,7 +317,7 @@ public:
             next();
         }
         wait_suspect = false;
-        suspect_name = sus.name;
+        suspect_name = sus.user_name;
         return sus.cards_in_hand;
     }
 
@@ -318,7 +325,7 @@ public:
         if (!wait_suspect)
             return false;
         auto& player = players_[next_player_idx];
-        if (player_name != player.name) 
+        if (player_name != player.user_name) 
             return false;
         give(player, 4);
         next();
@@ -337,7 +344,7 @@ public:
     bool check_winner(std::string& winner) {
         for (auto& player : players) 
             if (player.cards_in_hand.empty()) {
-                winner = player.name;
+                winner = player.user_name;
                 return true;
             }
         return false;

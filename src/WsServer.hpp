@@ -1,72 +1,97 @@
 #ifndef WS_SERVER_HPP
 #define WS_SERVER_HPP
 
-#include <iostream>
-#include <set>
+#include <string>
+#include <map>
+#include <unordered_map>
+#include <memory>
+#include <mutex>
+#include <thread>
 
 #include <websocketpp/config/asio_no_tls.hpp>
 #include <websocketpp/server.hpp>
-#include <websocketpp/common/thread.hpp>
 
-#include "MessageResolver.hpp"
+#include <json/json.h>
+
+#include "RoomManager.hpp"
+#include "Authorizer.hpp"
 
 typedef websocketpp::server<websocketpp::config::asio> server;
+//typedef websocketpp::log::basic<websocketpp::concurrency::basic, websocketpp::log::elevel> basic_elog;
 
+using std::placeholders::_1;
+using std::placeholders::_2;
 using websocketpp::connection_hdl;
-using websocketpp::lib::placeholders::_1;
-using websocketpp::lib::placeholders::_2;
-using websocketpp::lib::bind;
 
-using websocketpp::lib::thread;
-using websocketpp::lib::mutex;
-using websocketpp::lib::lock_guard;
-using websocketpp::lib::unique_lock;
-using websocketpp::lib::condition_variable;
+struct Connection {
+    std::string user_name;
+    unsigned conn_id;
+    //connection_hdl hdl;
+};
 
-/* on_open insert connection_hdl into channel
- * on_close remove connection_hdl from channel
- * on_message queue send to all channels
- */
-
-enum action_type {
+enum ActionType {
     SUBSCRIBE,
     UNSUBSCRIBE,
     MESSAGE
 };
 
-struct action {
-    action(action_type t, connection_hdl h) : type(t), hdl(h) {}
-    action(action_type t, connection_hdl h, server::message_ptr m)
+struct Action {
+    Action(ActionType t, connection_hdl h) : type(t), hdl(h) {}
+    Action(ActionType t, connection_hdl h, server::message_ptr m)
         : type(t), hdl(h), msg(m) {
     }
 
-    action_type type;
-    websocketpp::connection_hdl hdl;
-    server::message_ptr msg;
+    ActionType             type;
+    connection_hdl          hdl;
+    server::message_ptr     msg;
+};
+
+struct Response {
+    unsigned    conn_id;
+    std::string payload;
 };
 
 class WsServer {
-public:
-    WsServer() {
-        // Initialize Asio Transport
-        m_server.init_asio();
+    std::map<connection_hdl, Connection, std::owner_less<connection_hdl>> connections;
+    std::unordered_map<unsigned, connection_hdl> conn_id_2_hdl;
 
-        // Register handler callbacks
-        m_server.set_open_handler(bind(&WsServer::on_open, this, ::_1));
-        m_server.set_close_handler(bind(&WsServer::on_close, this, ::_1));
-        m_server.set_message_handler(bind(&WsServer::on_message, this, ::_1, ::_2));
+    server      svr;
+
+    std::queue<Action>      actions;
+    std::mutex              action_lock;
+    std::condition_variable action_cond;
+
+    std::queue<Response>    responses;
+
+    RoomManager<std::function<void(unsigned, const std::string&)>>
+        room_manager;
+    Authorizer auth;
+
+    //basic_elog elogger;
+
+public:
+    WsServer():room_manager(std::bind(&WsServer::send_message, this, ::_1, ::_2)) {
+        // Initialize Asio transport
+        svr.init_asio();
+
+        // Set callbacks
+        svr.set_open_handler(std::bind(&WsServer::on_open, this, ::_1));
+        svr.set_close_handler(std::bind(&WsServer::on_close, this, ::_1));
+        svr.set_message_handler(std::bind(&WsServer::on_message, this, ::_1, ::_2));
+
+        //elogger.set_channels(websocketpp::log::elevel::info);
     }
 
     void run(uint16_t port) {
         // listen on specified port
-        m_server.listen(port);
+        svr.listen(port);
 
         // Start the server accept loop
-        m_server.start_accept();
+        svr.start_accept();
 
         // Start the ASIO io_service run loop
         try {
-            m_server.run();
+            svr.run();
         }
         catch (const std::exception& e) {
             std::cout << e.what() << std::endl;
@@ -75,95 +100,139 @@ public:
 
     void on_open(connection_hdl hdl) {
         {
-            lock_guard<mutex> guard(m_action_lock);
-            //std::cout << "on_open" << std::endl;
-            m_actions.push(action(SUBSCRIBE, hdl));
+            std::lock_guard<std::mutex> guard(action_lock);
+            actions.push(Action(SUBSCRIBE, hdl));
         }
-        m_action_cond.notify_one();
+        action_cond.notify_one();
     }
 
     void on_close(connection_hdl hdl) {
         {
-            lock_guard<mutex> guard(m_action_lock);
-            //std::cout << "on_close" << std::endl;
-            m_actions.push(action(UNSUBSCRIBE, hdl));
+            std::lock_guard<std::mutex> guard(action_lock);
+            actions.push(Action(UNSUBSCRIBE, hdl));
         }
-        m_action_cond.notify_one();
+        action_cond.notify_one();
     }
 
     void on_message(connection_hdl hdl, server::message_ptr msg) {
-        // queue message up for sending by processing thread
         {
-            lock_guard<mutex> guard(m_action_lock);
-            //std::cout << "on_message" << std::endl;
-            m_actions.push(action(MESSAGE, hdl, msg));
+            std::lock_guard<std::mutex> guard(action_lock);
+            actions.push(Action(MESSAGE, hdl, msg));
         }
-        m_action_cond.notify_one();
+        action_cond.notify_one();
     }
 
-    void process_messages() {
-        while (1) {
-            unique_lock<mutex> lock(m_action_lock);
+    void process_message() {
+        static unsigned conn_id = 0;
 
-            while (m_actions.empty()) {
-                m_action_cond.wait(lock);
-            }
+        while (true) {
+            std::unique_lock<std::mutex> lock(action_lock);
 
-            action a = m_actions.front();
-            m_actions.pop();
+            while (actions.empty()) 
+                action_cond.wait(lock);
 
+            Action a = actions.front();
+            actions.pop();
             lock.unlock();
 
-            if (a.type == SUBSCRIBE) {
-                lock_guard<mutex> guard(m_connection_lock);
-                m_connections.insert(a.hdl);
-            }
-            else if (a.type == UNSUBSCRIBE) {
-                lock_guard<mutex> guard(m_connection_lock);
-                m_message_resolver.on_conn_close(a.hdl);
-                m_connections.erase(a.hdl);
-            }
-            else if (a.type == MESSAGE) {
-                // process message
-                m_message_resolver.process(a.msg->get_payload(), a.hdl);
-                //lock_guard<mutex> guard(m_connection_lock);
-                //con_list::iterator it;
-                //for (it = m_connections.begin(); it != m_connections.end(); ++it) {
-                //    m_server.send(*it, a.msg);
-                //}
-            }
-            else {
-                // undefined.
+            // Process
+            switch (a.type) {
+
+            case MESSAGE: {
+                auto payload = a.msg->get_payload();
+                Json::Reader reader;
+                Json::Value msg;
+
+                if (!reader.parse(payload, msg) || !msg.isMember("message_type")) {
+                    //elogger.write(websocketpp::log::elevel::info, "Invalid message format. ");
+                    break;
+                }
+
+                std::string message_type = msg["message_type"].asString();
+
+                // Authorized connection
+                if (connections.count(a.hdl)) {
+                    // 交给RoomManager类处理信息
+                    room_manager.process_message(
+                        connections[a.hdl].conn_id,
+                        connections[a.hdl].user_name,
+                        message_type,
+                        msg
+                    );
+                }
+                // Need Authorize
+                else {
+                    if (message_type != "AUTHORIZE") {
+                        // 请先登录
+                        Json::Value res;
+                        res["message_type"] = "PLEASE_LOG_IN";
+                        svr.send(
+                            a.hdl, Json::FastWriter().write(res),
+                            websocketpp::frame::opcode::TEXT
+                        );
+                        break;
+                    }
+                    
+                    // 交给Auth类处理
+                    unsigned sessdata = msg["sessdata"].asUInt();
+                    int id;
+                    std::string user_name;
+                    Authorizer::Result result =
+                        auth.authorize(sessdata, id, user_name);
+
+                    Json::Value res;
+                    res["message_type"] = "AUTHORIZE_RES";
+                    if (result == Authorizer::Result::SUCCESS) {
+                        res["success"] = true;
+                        res["id"] = id;
+                        res["user_name"] = user_name;
+                        connections[a.hdl] = { user_name, ++conn_id };
+                        conn_id_2_hdl[conn_id] = a.hdl;
+                    }
+                    else {
+                        res["success"] = false;
+                    }
+                    svr.send(
+                        a.hdl, Json::FastWriter().write(res),
+                        websocketpp::frame::opcode::TEXT
+                    );
+                }
+                break;
             }
 
-            // response
-            while (!m_message_resolver.empty()) {
-                auto res = m_message_resolver.response_next();
-                lock_guard<mutex> guard(m_connection_lock);
-                for (auto it = res.receivers.begin(); it != res.receivers.end(); ++it) {
-                    try {
-                        m_server.send(*it, res.msg, websocketpp::frame::opcode::TEXT);
-                    }
-                    catch (const std::exception& e) {
-                        std::cout << e.what() << std::endl;
-                    }
+            case UNSUBSCRIBE: {
+                if (connections.count(a.hdl)) {
+                    room_manager.process_close(connections[a.hdl].conn_id, connections[a.hdl].user_name);
+                    conn_id_2_hdl.erase(connections[a.hdl].conn_id);
+                    connections.erase(a.hdl);
                 }
-                //else
-                  //  m_server.send(res.receiver, res.msg, websocketpp::frame::opcode::TEXT);
+                break;
+            }
+
+            default:
+                break;
+            }
+
+            // Send responses
+            while (!responses.empty()) {
+                auto& res = responses.front();
+                try {
+                    svr.send(
+                        conn_id_2_hdl[res.conn_id],
+                        res.payload,
+                        websocketpp::frame::opcode::TEXT
+                    );
+                }
+                catch (std::exception& e) {
+                }
+                responses.pop();
             }
         }
     }
-private:
-    typedef std::set<connection_hdl, std::owner_less<connection_hdl> > con_list;
 
-    server m_server;
-    con_list m_connections;
-    std::queue<action> m_actions;
-    MessageResolver m_message_resolver;
-
-    mutex m_action_lock;
-    mutex m_connection_lock;
-    condition_variable m_action_cond;
+    void send_message(unsigned conn_id, const std::string& payload) {
+        responses.push({ conn_id, payload });
+    }
 };
 
-#endif 
+#endif
