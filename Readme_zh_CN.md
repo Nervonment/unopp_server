@@ -31,6 +31,12 @@ cd unopp_server
 cmake .
 make
 ```
+
+*如果目录 `SQLiteCpp` 是空的，请先执行下面的命令下载子模块。*
+```
+git submodule update --init --recursive
+```
+
 构建之后，请先运行 `setup.sh` 创建数据库，然后再运行服务端
 ```sh
 ./setup.sh
@@ -44,4 +50,4 @@ unopp_server 会监听 `1145` 和 `1146` 端口。其中 `1145` 用于 WebSocket
 [JsonCpp](https://github.com/open-source-parsers/jsoncpp)  
 [cpp-httplib](https://github.com/yhirose/cpp-httplib)  
 [WebSocket++](https://github.com/zaphoyd/websocketpp)  
-[SQLiteC++](SQLiteC++)  
+[SQLiteC++](https://github.com/SRombauts/SQLiteCpp)  
