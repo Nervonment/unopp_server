@@ -9,6 +9,7 @@
 
 struct UserInfo {
     std::string user_name;
+    int         user_id;
     bool offline    = false;
     bool prepared   = false;
 };
@@ -18,7 +19,9 @@ struct UserInfo {
 template <typename SendMsgFunc>
 class Room:public Responsor<SendMsgFunc> {
     unsigned id;
-    inline static std::unordered_map<std::string, unsigned> user_2_room_id{};
+    std::string creator;
+    std::string name;
+    inline static std::unordered_map<int, unsigned> user_2_room_id{};
     std::string password;
 
 protected:
@@ -26,13 +29,41 @@ protected:
     bool is_game_on = false;
 
 public:
-    Room(const SendMsgFunc& send_msg,
-        unsigned id, const std::string& password)
-        :Responsor<SendMsgFunc>(send_msg), id(id), password(password) {}
+    unsigned get_id() {
+        return this->id;
+    }
+    std::string get_creator() {
+        return this->creator;
+    }
+    std::string get_name() {
+        return this->name;
+    }
+    int get_num_of_people() {
+        return this->connections.size();
+    }
+    virtual std::string get_type() {
+        return "Chat Room";
+    }
+
+    std::string user_id_to_user_name(int id) {
+        for (auto& conn : connections)
+            if (conn.second.user_id == id)
+                return conn.second.user_name;
+        return "";
+    }
+
+public:
+    Room(
+        const SendMsgFunc& send_msg,
+        unsigned id, const std::string& creator,
+        const std::string& name, const std::string& password
+    )
+        :Responsor<SendMsgFunc>(send_msg), id(id), creator(creator), name(name), password(password) {}
 
     virtual void process_message(
         unsigned conn_id,
         const std::string& user_name,
+        int                user_id,
         const std::string& message_type,
         const Json::Value& payload
     ) {
@@ -59,9 +90,11 @@ public:
                 }
             }
 
-            if (user_2_room_id.count(user_name) && user_2_room_id[user_name] != id) {
+            if (user_2_room_id.count(user_id) && !erase_old_conn_id
+                //&& user_2_room_id[user_id] != id
+                ) {
                 res["success"] = false;
-                res["info"] = "You have already joined room " + std::to_string(user_2_room_id[user_name]);
+                res["info"] = "You have already joined room " + std::to_string(user_2_room_id[user_id]);
                 this->send_msg(conn_id, Json::FastWriter().write(res));
                 return;
             }
@@ -84,8 +117,10 @@ public:
             connections[conn_id].offline = false;
             connections[conn_id].prepared = false;
             connections[conn_id].user_name = user_name;
-            user_2_room_id[user_name] = id;
+            connections[conn_id].user_id = user_id;
+            user_2_room_id[user_id] = id;
             res["success"] = true;
+            res["room_type"] = get_type();
             this->send_msg(conn_id, Json::FastWriter().write(res));
             broadcast(get_room_members_info(), "ROOM_MEMBERS_INFO");
         }
@@ -102,6 +137,7 @@ public:
             if (message_type == "CHAT_MESSAGE") {
                 auto res = payload;
                 res["message"]["user_name"] = user_name;
+                res["message"]["user_id"] = user_id;
                 broadcast(res, "CHAT_MESSAGE");
             }
 
@@ -128,8 +164,9 @@ public:
             else {
                 Json::Value res;
                 res["user_name"] = connections[conn_id].user_name;
+                res["user_id"] = connections[conn_id].user_id;
                 broadcast(res, "MEMBER_LEAVES");   
-                user_2_room_id.erase(connections[conn_id].user_name);
+                user_2_room_id.erase(connections[conn_id].user_id);
                 connections.erase(conn_id);
             }
         }
@@ -150,6 +187,7 @@ public:
         for (auto p : connections) {
             Json::Value user;
             user["name"] = p.second.user_name;
+            user["id"] = p.second.user_id;
             user["prepared"] = p.second.prepared;
             user["offline"] = p.second.offline;
             info["members"].append(user);
@@ -165,14 +203,15 @@ public:
         return res;
     }
 
-    static unsigned get_users_room_id(const std::string& user_name) {
-        return user_2_room_id.count(user_name) ?
-            user_2_room_id[user_name] : 0;
+    static unsigned get_users_room_id(int user_id) {
+        return user_2_room_id.count(user_id) ?
+            user_2_room_id[user_id] : 0;
     }
+
 
     ~Room() {
         for (auto& p : connections)
-            user_2_room_id.erase(p.second.user_name);
+            user_2_room_id.erase(p.second.user_id);
     }
 };
 

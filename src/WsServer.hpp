@@ -24,6 +24,7 @@ using std::placeholders::_2;
 using websocketpp::connection_hdl;
 
 struct Connection {
+    int user_id;
     std::string user_name;
     unsigned conn_id;
     //connection_hdl hdl;
@@ -65,7 +66,7 @@ class WsServer {
 
     RoomManager<std::function<void(unsigned, const std::string&)>>
         room_manager;
-    Authorizer auth;
+    Authorizer& auth = Authorizer::get_instance();
 
     //basic_elog elogger;
 
@@ -156,6 +157,7 @@ public:
                     room_manager.process_message(
                         connections[a.hdl].conn_id,
                         connections[a.hdl].user_name,
+                        connections[a.hdl].user_id,
                         message_type,
                         msg
                     );
@@ -186,7 +188,7 @@ public:
                         res["success"] = true;
                         res["id"] = id;
                         res["user_name"] = user_name;
-                        connections[a.hdl] = { user_name, ++conn_id };
+                        connections[a.hdl] = { id, user_name, ++conn_id };
                         conn_id_2_hdl[conn_id] = a.hdl;
                     }
                     else {
@@ -202,7 +204,7 @@ public:
 
             case UNSUBSCRIBE: {
                 if (connections.count(a.hdl)) {
-                    room_manager.process_close(connections[a.hdl].conn_id, connections[a.hdl].user_name);
+                    room_manager.process_close(connections[a.hdl].conn_id, connections[a.hdl].user_id);
                     conn_id_2_hdl.erase(connections[a.hdl].conn_id);
                     connections.erase(a.hdl);
                 }
