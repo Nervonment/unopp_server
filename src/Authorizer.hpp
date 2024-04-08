@@ -8,13 +8,13 @@
 
 #include <sqlite3.h>
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <json/json.h>
 
 class Authorizer {
-    std::mutex db_mutex;
-
 public:
     enum class Result {
         SUCCESS,
+        FAILED,                 // unknown reason
 
         USERNAME_DUPLICATE,
         USERNAME_INVALID,
@@ -25,13 +25,24 @@ public:
 
         SESSDATA_INVALID,
 
-        SET_ICON_FAILED
+        SET_ICON_FAILED,
+
+        ALREADY_REQUESTED,
+        ALREADY_FRIEND,
+        CANNOT_REQUEST_SELF,
     };
 
 private:
     SQLite::Database db{ "users.db", SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE };
+    std::mutex db_mutex;
 
-    Authorizer() { }
+    std::unordered_multimap<int, std::pair<int, int>> cache;
+    std::mutex cache_mutex;
+
+    Authorizer() {
+        std::thread t(std::bind(&Authorizer::write_cache_to_database, this));
+        t.detach();
+    }
 public:
     static Authorizer& get_instance() {
         static Authorizer auth;
@@ -229,6 +240,268 @@ public:
         }
 
         return Result::SUCCESS;
+    }
+
+    Result raise_friend_request(int requester_id, int requestee_id) {
+        if (requester_id == requestee_id)
+            return Result::CANNOT_REQUEST_SELF;
+        
+        {
+            std::lock_guard<std::mutex> lock(db_mutex);
+
+            SQLite::Statement q1(db, "SELECT 1 FROM user WHERE id=?");
+            q1.bind(1, requester_id);
+            if (!q1.executeStep())
+                return Result::USER_DONOT_EXIST;
+
+            SQLite::Statement q2(db, "SELECT 1 FROM user WHERE id=?");
+            q2.bind(1, requestee_id);
+            if (!q2.executeStep())
+                return Result::USER_DONOT_EXIST;
+
+            SQLite::Statement q3(db, "SELECT 1 FROM relation WHERE user_id=? AND friend_id=?");
+            q3.bind(1, requester_id);
+            q3.bind(2, requestee_id);
+            if (q3.executeStep())
+                return Result::ALREADY_FRIEND;
+
+            SQLite::Transaction tr(db);
+            SQLite::Statement query(db, "INSERT INTO friend_request (requester_id, requestee_id) VALUES (?, ?)");
+            query.bind(1, requester_id);
+            query.bind(2, requestee_id);
+            try {
+                query.executeStep();
+            }
+            catch (const std::exception&) {
+                return Result::ALREADY_REQUESTED;
+            }
+            tr.commit();
+        }
+
+        return Result::SUCCESS;
+    }
+
+    Result get_friend_requests(int id, Json::Value& requests) {
+        {
+            std::lock_guard<std::mutex> lock(db_mutex);
+
+            SQLite::Statement q1(db, "SELECT requester_id FROM friend_request WHERE requestee_id=?");
+            q1.bind(1, id);
+            requests.resize(0);
+            
+            try {
+                while (q1.executeStep()) {
+                    int requester = q1.getColumn(0);
+                    requests.append(query_for_user_info(requester));
+                    //SQLite::Statement q2(db, "SELECT user_name FROM user WHERE id=?");
+                    //q2.bind(1, requester);
+                    //q2.executeStep();
+                    //std::string name = q2.getColumn(0);
+                    //Json::Value v;
+                    //v["name"] = name;
+                    //v["id"] = requester;
+                    //requests.append(v);
+                }
+            }
+            catch (const std::exception&) {
+                return Result::FAILED;
+            }
+        }
+
+        return Result::SUCCESS;
+    }
+
+    Result remove_friend_request(int id, int requester_id) {
+        {
+            std::lock_guard<std::mutex> lock(db_mutex);
+
+            SQLite::Statement q1(db, "DELETE FROM friend_request WHERE requester_id=? AND requestee_id=?");
+            q1.bind(1, requester_id);
+            q1.bind(2, id);
+
+            try {
+                SQLite::Transaction tr(db);
+                q1.executeStep();
+                q1.reset();
+                q1.bind(1, id);
+                q1.bind(2, requester_id);
+                q1.executeStep();
+                tr.commit();
+            }
+            catch (const std::exception&) {
+                return Result::FAILED;
+            }
+
+            return Result::SUCCESS;
+        }
+    }
+
+    Result accept_friend_request(int id, int requester_id) {
+        if (remove_friend_request(id, requester_id) == Result::FAILED)
+            return Result::FAILED;
+        {
+            try {
+                std::lock_guard<std::mutex> lock(db_mutex);
+
+                SQLite::Transaction tr(db);
+                SQLite::Statement q1(db, "INSERT INTO relation (user_id, friend_id) VALUES (?,?)");
+                q1.bind(1, id);
+                q1.bind(2, requester_id);
+                q1.executeStep();
+
+                q1.reset();
+                q1.bind(1, requester_id);
+                q1.bind(2, id);
+                q1.executeStep();
+                tr.commit();
+            }
+            catch (const std::exception&) {
+                return Result::FAILED;
+            }
+        }
+
+        return Result::SUCCESS;
+    }
+
+    Json::Value get_friend_list(int id) {
+        Json::Value res;
+        res.resize(0);
+        {
+            std::lock_guard<std::mutex> lock(db_mutex);
+            std::lock_guard<std::mutex> lock1(cache_mutex);
+            SQLite::Statement q1(db, "SELECT friend_id, unread FROM relation WHERE user_id=?");
+            q1.bind(1, id);
+            while (q1.executeStep()) {
+                int friend_id = q1.getColumn(0);
+                int unread = q1.getColumn(1);
+                auto [begin, end] = cache.equal_range(id);
+                for (auto it = begin; it != end; ++it)
+                    if (it->second.first == friend_id) {
+                        unread += it->second.second;
+                        break;
+                    }
+                auto f = query_for_user_info(friend_id);
+                f["unread"] = unread;
+                res.append(std::move(f));
+                //SQLite::Statement q2(db, "SELECT user_name, slogan FROM user WHERE id=?");
+                //q2.bind(1, friend_id);
+                //q2.executeStep();
+                //Json::Value f;
+                //f["name"] = q2.getColumn(0).getString();
+                //f["id"] = friend_id;
+                //f["slogan"] = q2.getColumn(1).getString();
+                //res.append(f);
+            }
+        }
+        return res;
+    }
+
+    Json::Value get_user_info(int id) {
+        Json::Value res;
+
+        {
+            std::lock_guard<std::mutex> lock(db_mutex);
+            res = query_for_user_info(id);
+        }
+        return res;
+    }
+
+private:
+    Json::Value query_for_user_info(int id) {
+        Json::Value res;
+        SQLite::Statement q1(db, "SELECT user_name, slogan FROM user WHERE id=?");
+        q1.bind(1, id);
+        if (q1.executeStep()) {
+            res["name"] = q1.getColumn(0).getString();
+            res["slogan"] = q1.getColumn(1).getString();
+            res["id"] = id;
+        }
+        return res;
+    }
+
+public:
+    Result set_slogan(int id, const std::string& slogan) {
+        {
+            std::lock_guard<std::mutex> lock(db_mutex);
+            SQLite::Statement q1(db, "UPDATE user SET slogan=? WHERE id=?");
+            q1.bind(1, slogan);
+            q1.bind(2, id);
+            SQLite::Transaction tr(db);
+            q1.executeStep();
+            tr.commit();
+        }
+        return Result::SUCCESS;
+    }
+
+    Result add_one_unread(int user_id, int friend_id) {
+        {
+            std::lock_guard<std::mutex> lock(cache_mutex);
+            auto [begin, end] = cache.equal_range(user_id);
+            bool found = false;
+            for (auto it = begin; it != end; ++it)
+                if (it->second.first == friend_id) {
+                    it->second.second++;
+                    found = true;
+                    break;
+                }
+            if (!found)
+                cache.emplace(user_id, std::pair{ friend_id, 1 });
+        }
+        //{
+        //    std::lock_guard<std::mutex> lock(db_mutex);
+        //    SQLite::Statement q1(db, "UPDATE relation SET unread=unread+1 WHERE user_id=? AND friend_id=?");
+        //    q1.bind(1, user_id);
+        //    q1.bind(2, friend_id);
+        //    SQLite::Transaction tr(db);
+        //    q1.executeStep();
+        //    tr.commit();
+        //}
+        return Result::SUCCESS;
+    }
+
+    Result clear_unread(int user_id, int friend_id) {
+        {
+            std::lock_guard<std::mutex> lock(cache_mutex);
+            auto [begin, end] = cache.equal_range(user_id);
+            for (auto it = begin; it != end; ++it)
+                if (it->second.first == friend_id) {
+                    it->second.second = 0;
+                    break;
+                }
+        }
+        {
+            std::lock_guard<std::mutex> lock(db_mutex);
+            SQLite::Statement q1(db, "UPDATE relation SET unread=0 WHERE user_id=? AND friend_id=?");
+            q1.bind(1, user_id);
+            q1.bind(2, friend_id);
+            SQLite::Transaction tr(db);
+            q1.executeStep();
+            tr.commit();
+        }
+        return Result::SUCCESS;
+    }
+
+private:
+    void write_cache_to_database(){
+        while (true) {
+            std::this_thread::sleep_for(std::chrono::minutes(10));
+            std::lock_guard<std::mutex> lock(cache_mutex);
+            SQLite::Statement q1(db, "UPDATE relation SET unread=unread+? WHERE user_id=? AND friend_id=?");
+            SQLite::Transaction tr(db);
+            for (auto& item : cache) {
+                q1.bind(1, item.second.second);
+                q1.bind(2, item.first);
+                q1.bind(3, item.second.first);
+                try {
+                    q1.executeStep();
+                }
+                catch (const std::exception&) {
+                }
+                q1.reset();
+            }
+            tr.commit();
+            cache.clear();
+        }
     }
 };
 

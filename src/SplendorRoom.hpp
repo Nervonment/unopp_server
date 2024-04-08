@@ -12,10 +12,10 @@ class SplendorRoom :public Room<SendMsgFunc> {
 public:
     SplendorRoom(
         const SendMsgFunc& send_msg,
-        unsigned id, const std::string& creator,
+        unsigned id, const std::string& creator, int creator_id,
         const std::string& name, const std::string& password
     )
-        :Room<SendMsgFunc>(send_msg, id, creator, name, password) {}
+        :Room<SendMsgFunc>(send_msg, id, creator, creator_id, name, password) {}
 
     virtual std::string get_type() {
         return "SPLENDOR";
@@ -60,8 +60,10 @@ public:
                 if (success) {
                     send_game_info();
                     int winner;
-                    if (game->check_winner(winner))
+                    if (game->check_winner(winner)) {
+                        this->is_game_on = false;
                         send_game_result(winner);
+                    }
                 }
             }
 
@@ -73,11 +75,14 @@ public:
 
             else if (message_type == "SPLENDOR_BUY_RESERVED_COUPON") {
                 bool success = game->buy_reserved_coupon(payload["coupon_idx"].asInt(), user_id);
-                if (success)
+                if (success) {
                     send_game_info();
-                int winner;
-                if (game->check_winner(winner))
-                    send_game_result(winner);
+                    int winner;
+                    if (game->check_winner(winner)) {
+                        this->is_game_on = false;
+                        send_game_result(winner);
+                    }
+                }
             }
 
             else if (message_type == "SPLENDOR_RETURN_MINE") {
@@ -133,6 +138,11 @@ public:
         auto info = game->get_game_info();
         for (auto& p : info["players"])
             p["name"] = this->user_id_to_user_name(p["id"].asInt());
+        if (info["last_action"].isMember("subject_id"))
+            info["last_action"]["subject_name"] = this->user_id_to_user_name(info["last_action"]["subject_id"].asInt());
+        if (!info["ally_actions"].isNull())
+            for (auto& a : info["ally_actions"])
+                a["subject_name"] = this->user_id_to_user_name(a["subject_id"].asInt());
         for (auto& p : this->connections) {
             Json::Value res;
             res["message_type"] = "SPLENDOR_GAME_INFO";
@@ -146,11 +156,15 @@ public:
         auto info = game->get_game_info();
         for (auto& p : info["players"])
             p["name"] = this->user_id_to_user_name(p["id"].asInt());
-        Json::Value res;
-        res["info"] = info;
-        res["winner_id"] = winner;
-        res["winner_name"] = this->user_id_to_user_name(winner);
-        this->broadcast(res, "SPLENDOR_GAME_OVER");
+        for (auto& p : this->connections) {
+            Json::Value res;
+            res["message_type"] = "SPLENDOR_GAME_OVER";
+            res["info"] = info;
+            res["winner_id"] = winner;
+            res["winner_name"] = this->user_id_to_user_name(winner);
+            res["info"]["player_info"] = game->get_player_info(p.second.user_id);
+            this->send_msg(p.first, Json::FastWriter().write(res));
+        }
     }
 };
 

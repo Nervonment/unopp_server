@@ -12,10 +12,10 @@ class UnoRoom :public Room<SendMsgFunc> {
 public:
     UnoRoom(
         const SendMsgFunc& send_msg,
-        unsigned id, const std::string& creator,
+        unsigned id, const std::string& creator, int creator_id,
         const std::string& name, const std::string& password
     )
-        :Room<SendMsgFunc>(send_msg, id, creator, name, password) {}
+        :Room<SendMsgFunc>(send_msg, id, creator, creator_id, name, password) {}
 
     virtual std::string get_type() {
         return "UNO";

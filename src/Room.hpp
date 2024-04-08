@@ -4,6 +4,7 @@
 #include <string>
 #include <unordered_map>
 #include <json/json.h>
+#include <set>
 
 #include "Responsor.hpp"
 
@@ -23,6 +24,7 @@ class Room:public Responsor<SendMsgFunc> {
     std::string name;
     inline static std::unordered_map<int, unsigned> user_2_room_id{};
     std::string password;
+    std::set<int> authorized_user_id;
 
 protected:
     std::unordered_map<unsigned, UserInfo> connections;
@@ -45,6 +47,10 @@ public:
         return "Chat Room";
     }
 
+    bool get_is_game_on() {
+        return is_game_on;
+    }
+
     std::string user_id_to_user_name(int id) {
         for (auto& conn : connections)
             if (conn.second.user_id == id)
@@ -55,10 +61,12 @@ public:
 public:
     Room(
         const SendMsgFunc& send_msg,
-        unsigned id, const std::string& creator,
+        unsigned id, const std::string& creator, int creator_id,
         const std::string& name, const std::string& password
     )
-        :Responsor<SendMsgFunc>(send_msg), id(id), creator(creator), name(name), password(password) {}
+        :Responsor<SendMsgFunc>(send_msg), id(id), creator(creator), name(name), password(password) {
+        authorized_user_id.emplace(creator_id);
+    }
 
     virtual void process_message(
         unsigned conn_id,
@@ -74,6 +82,7 @@ public:
             bool erase_old_conn_id = false;
             unsigned old_conn_id;
 
+            // 正在进行游戏，新的用户不能加入房间
             if (is_game_on) {
                 bool ok = false;
                 for(auto& p: connections)
@@ -90,6 +99,7 @@ public:
                 }
             }
 
+            // 用户已经加入了其他房间
             if (user_2_room_id.count(user_id) && !erase_old_conn_id
                 //&& user_2_room_id[user_id] != id
                 ) {
@@ -99,12 +109,23 @@ public:
                 return;
             }
 
-            if (payload["password"].asString() != password) {
+            // 密码错误
+            if (!payload["no_password"].asBool() && payload["password"].asString() != password) {
                 res["success"] = false;
                 res["info"] = "Password incorrect.";
                 this->send_msg(conn_id, Json::FastWriter().write(res));
                 return;
             }
+
+            // 第一次加入房间需要输入密码
+            if (payload["no_password"].asBool() && authorized_user_id.find(user_id) == authorized_user_id.end()) {
+                res["success"] = false;
+                res["info"] = "Need Password";
+                this->send_msg(conn_id, Json::FastWriter().write(res));
+                return;
+            }
+
+            // 能够加入房间
 
             if(erase_old_conn_id)
                 connections.erase(old_conn_id); // Erase the old connection id
@@ -118,6 +139,7 @@ public:
             connections[conn_id].prepared = false;
             connections[conn_id].user_name = user_name;
             connections[conn_id].user_id = user_id;
+            authorized_user_id.emplace(user_id);
             user_2_room_id[user_id] = id;
             res["success"] = true;
             res["room_type"] = get_type();

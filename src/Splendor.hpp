@@ -167,6 +167,9 @@ private:
     std::vector<Ally> allies;
 
     std::unordered_map<int, Player> players;
+
+    Json::Value last_action;
+    Json::Value ally_actions;
     //std::unordered_map<std::string, Player>::iterator current_player;
 
 public:
@@ -188,7 +191,6 @@ public:
         int ally_count = player_ids.size() + 1;
 
         std::array<Ally, 10> all_allies {
-            Ally{ 3,{0,0,0,4,4},0 },
             Ally{ 3,{0,4,4,0,0},1 },
             Ally{ 3,{3,3,3,0,0},2 },
             Ally{ 3,{0,3,3,3,0},3 },
@@ -197,7 +199,8 @@ public:
             Ally{ 3,{4,0,4,0,0},6 },
             Ally{ 3,{4,0,0,0,4},7 },
             Ally{ 3,{0,4,0,4,0},8 },
-            Ally{ 3,{0,3,0,3,3},9 }
+            Ally{ 3,{0,3,0,3,3},9 },
+            Ally{ 3,{0,0,0,4,4},10 }
         };
 
         allies.reserve(ally_count);
@@ -332,6 +335,8 @@ public:
         //    coupons_rest.push_back(Coupon::random_lv3());
         //for (int i = 0; i < 4; ++i)
         //    coupons.push_back(Coupon::random_lv3());
+
+        ally_actions.resize(0);
     }
 
     Json::Value get_game_info() {
@@ -353,6 +358,9 @@ public:
         info["players"].resize(0);
         for (auto& p : players)
             info["players"].append(p.second.to_json(p.first));
+
+        info["last_action"] = last_action;
+        info["ally_actions"] = ally_actions;
 
         return info;
     }
@@ -402,6 +410,15 @@ public:
             it->second.status = Player::ACTION;
         }
 
+        last_action = Json::Value{};
+        last_action["type"] = "TAKE_3";
+        last_action["subject_id"] = player;
+        last_action["mines"].resize(3);
+        int i = 0;
+        for (auto& m : mines)
+            last_action["mines"][i++] = static_cast<int>(m);
+        ally_actions.resize(0);
+
         return true;
     }
 
@@ -431,6 +448,12 @@ public:
             it->second.status = Player::ACTION;
         }
 
+        last_action = Json::Value{};
+        last_action["type"] = "TAKE_2";
+        last_action["subject_id"] = player;
+        last_action["mine"] = static_cast<int>(mine);
+        ally_actions.resize(0);
+
         return true;
     }
 
@@ -454,6 +477,13 @@ public:
 
         p.reserved_coupons.push_back(*coupon_it);
         auto level = coupon_it->level;
+
+        last_action = Json::Value{};
+        last_action["type"] = "RESERVE_COUPON";
+        last_action["subject_id"] = player;
+        last_action["coupon"] = coupon_it->to_json();
+        ally_actions.resize(0);
+
         //coupons.erase(coupon_it);
         fill_coupon(level, *coupon_it);
 
@@ -512,6 +542,13 @@ public:
         p.coupon_count[coupon_it->type]++;
         p.reputation += coupon_it->reputation;
         auto level = coupon_it->level;
+
+        last_action = Json::Value{};
+        last_action["type"] = "BUY_COUPON";
+        last_action["subject_id"] = player;
+        last_action["coupon"] = coupon_it->to_json();
+        ally_actions.resize(0);
+
 //        coupons.erase(coupon_it);
         fill_coupon(level, *coupon_it);
 
@@ -582,6 +619,13 @@ public:
         assert(coupon_it->type != GOLD);
         p.coupon_count[coupon_it->type]++;
         p.reputation += coupon_it->reputation;
+
+        last_action = Json::Value{};
+        last_action["type"] = "BUY_RESERVED_COUPON";
+        last_action["subject_id"] = player;
+        last_action["coupon"] = coupon_it->to_json();
+        ally_actions.resize(0);
+
         p.reserved_coupons.erase(coupon_it);
 
         p.status = Player::WAITING;
@@ -648,6 +692,10 @@ public:
                         a.is_owned = true;
                         a.owner_id = p.first;
                         p.second.reputation += a.reputation;
+                        Json::Value action;
+                        action["subject_id"] = p.first;
+                        action["ally"] = a.to_json();
+                        ally_actions.append(action);
                     }
                 }
     }
