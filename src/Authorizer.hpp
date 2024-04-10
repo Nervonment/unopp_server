@@ -49,7 +49,7 @@ public:
         return auth;
     }
 
-    Result new_user(const std::string& user_name, const std::string& password, const std::string& icon = "") {
+    Result new_user(const std::string& user_name, const std::string& password) {
         if (user_name.empty() || user_name.size() > 40)
             return Result::USERNAME_INVALID;
         if (password.empty())
@@ -63,10 +63,9 @@ public:
                 return Result::USERNAME_DUPLICATE;
 
             SQLite::Transaction tr(db);
-            SQLite::Statement insert(db, "INSERT INTO user (user_name, password, icon) VALUES (?, ?, ?)");
+            SQLite::Statement insert(db, "INSERT INTO user (user_name, password) VALUES (?, ?)");
             insert.bind(1, user_name);
             insert.bind(2, password);
-            insert.bind(3, icon);
             insert.exec();
             tr.commit();
         }
@@ -174,6 +173,7 @@ public:
         return Result::SUCCESS;
     }
 
+    // Deprecated
     Result set_icon(int id, const std::string& icon = "") {
         {
             std::lock_guard<std::mutex> lock(db_mutex);
@@ -197,6 +197,7 @@ public:
         return Result::SUCCESS;
     }
 
+    // Deprecated
     Result get_icon(int id, std::string& icon) {
         {
             std::lock_guard<std::mutex> lock(db_mutex);

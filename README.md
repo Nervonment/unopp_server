@@ -40,7 +40,8 @@ git submodule update --init --recursive
 构建之后，请先运行 `setup.sh` 初始化数据库，然后再运行服务端
 ```sh
 ./setup.sh
-./build/unopp_server
+cd build
+./unopp_server
 ```
 
 unopp_server 会监听 `1145` 和 `1146` 端口。其中 `1145` 用于 WebSocket 连接，`1146` 用于 Http 连接。你可以在 `main.cpp` 中修改监听的端口。端口的配置需和前端/客户端中一致，详见前端/客户端仓库。
